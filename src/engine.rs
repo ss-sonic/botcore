@@ -25,16 +25,51 @@ use crate::metrics::METRICS;
 /// 
 /// ```rust
 /// use botcore::{Engine, Result};
-/// use botcore::types::{Collector, Strategy, Executor};
+/// use botcore::types::{Collector, CollectorStream, Strategy, Executor};
+/// use async_trait::async_trait;
+/// use tokio_stream;
 /// 
-/// # struct BlockEvent;
-/// # struct TradeAction;
-/// # struct BlockCollector;
-/// # struct TradingStrategy;
-/// # struct TradeExecutor;
-/// # impl Collector<BlockEvent> for BlockCollector { }
-/// # impl Strategy<BlockEvent, TradeAction> for TradingStrategy { }
-/// # impl Executor<TradeAction> for TradeExecutor { }
+/// #[derive(Debug, Clone)]
+/// struct BlockEvent;
+/// 
+/// #[derive(Debug, Clone)]
+/// struct TradeAction;
+/// 
+/// struct BlockCollector;
+/// 
+/// #[async_trait]
+/// impl Collector<BlockEvent> for BlockCollector {
+///     async fn get_event_stream(&self) -> Result<CollectorStream<'_, BlockEvent>> {
+///         // Implementation details...
+///         let events = Vec::<BlockEvent>::new();
+///         Ok(Box::pin(tokio_stream::iter(events)))
+///     }
+/// }
+/// 
+/// struct TradingStrategy;
+/// 
+/// #[async_trait]
+/// impl Strategy<BlockEvent, TradeAction> for TradingStrategy {
+///     async fn sync_state(&mut self) -> Result<()> {
+///         // Implementation details...
+///         Ok(())
+///     }
+///     
+///     async fn process_event(&mut self, _event: BlockEvent) -> Vec<TradeAction> {
+///         // Implementation details...
+///         vec![]
+///     }
+/// }
+/// 
+/// struct TradeExecutor;
+/// 
+/// #[async_trait]
+/// impl Executor<TradeAction> for TradeExecutor {
+///     async fn execute(&self, _action: TradeAction) -> Result<()> {
+///         // Implementation details...
+///         Ok(())
+///     }
+/// }
 /// 
 /// async fn run_bot() -> Result<()> {
 ///     // Create a new engine with custom channel capacities
@@ -48,10 +83,10 @@ use crate::metrics::METRICS;
 ///     engine.add_executor(Box::new(TradeExecutor));
 ///     
 ///     // Run the engine
-///     let join_set = engine.run().await?;
+///     let mut join_set = engine.run().await?;
 ///     
 ///     // Wait for all tasks to complete
-///     join_set.await;
+///     while join_set.join_next().await.is_some() {}
 ///     Ok(())
 /// }
 /// ```

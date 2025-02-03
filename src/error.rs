@@ -101,3 +101,91 @@ impl BotError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+    use std::fmt;
+
+    #[derive(Debug)]
+    struct TestError(String);
+
+    impl fmt::Display for TestError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+
+    impl Error for TestError {}
+
+    #[test]
+    fn test_collector_error() {
+        let error = BotError::collector_error("test error");
+        assert!(matches!(error, BotError::CollectorError { message, source } 
+            if message == "test error" && source.is_none()));
+        
+        let source = TestError("source error".to_string());
+        let error = BotError::collector_error_with_source("test error", source);
+        assert!(matches!(error, BotError::CollectorError { message, source: Some(_) } 
+            if message == "test error"));
+    }
+
+    #[test]
+    fn test_strategy_error() {
+        let error = BotError::strategy_error("test error");
+        assert!(matches!(error, BotError::StrategyError { message, source }
+            if message == "test error" && source.is_none()));
+        
+        let source = TestError("source error".to_string());
+        let error = BotError::strategy_error_with_source("test error", source);
+        assert!(matches!(error, BotError::StrategyError { message, source: Some(_) }
+            if message == "test error"));
+    }
+
+    #[test]
+    fn test_executor_error() {
+        let error = BotError::executor_error("test error");
+        assert!(matches!(error, BotError::ExecutorError { message, source }
+            if message == "test error" && source.is_none()));
+        
+        let source = TestError("source error".to_string());
+        let error = BotError::executor_error_with_source("test error", source);
+        assert!(matches!(error, BotError::ExecutorError { message, source: Some(_) }
+            if message == "test error"));
+    }
+
+    #[test]
+    fn test_channel_error() {
+        let error = BotError::channel_error("test error");
+        assert!(matches!(error, BotError::ChannelError { message, source }
+            if message == "test error" && source.is_none()));
+        
+        let source = TestError("source error".to_string());
+        let error = BotError::channel_error_with_source("test error", source);
+        assert!(matches!(error, BotError::ChannelError { message, source: Some(_) }
+            if message == "test error"));
+    }
+
+    #[test]
+    fn test_error_conversion() {
+        let anyhow_error = anyhow::anyhow!("test error");
+        let error: BotError = anyhow_error.into();
+        assert!(matches!(error, BotError::Other(_)));
+    }
+
+    #[test]
+    fn test_error_display() {
+        let error = BotError::collector_error("test error");
+        assert_eq!(error.to_string(), "Collector error: test error");
+
+        let error = BotError::strategy_error("test error");
+        assert_eq!(error.to_string(), "Strategy error: test error");
+
+        let error = BotError::executor_error("test error");
+        assert_eq!(error.to_string(), "Executor error: test error");
+
+        let error = BotError::channel_error("test error");
+        assert_eq!(error.to_string(), "Channel error: test error");
+    }
+}

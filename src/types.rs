@@ -23,7 +23,7 @@ pub type CollectorStream<'a, E> = Pin<Box<dyn Stream<Item = E> + Send + 'a>>;
 /// # Example
 ///
 /// ```rust
-/// use botcore::types::Collector;
+/// use botcore::types::{Collector, CollectorStream};
 /// use botcore::error::Result;
 /// use async_trait::async_trait;
 ///
@@ -265,5 +265,150 @@ where
             Some(action) => self.executor.execute(action).await,
             None => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    use tokio_stream::StreamExt;
+
+    // Test event and action types
+    #[derive(Debug, Clone, PartialEq)]
+    struct TestEvent(u64);
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct TestAction(String);
+
+    // Mock collector implementation
+    struct MockCollector {
+        events: Vec<TestEvent>,
+    }
+
+    #[async_trait]
+    impl Collector<TestEvent> for MockCollector {
+        async fn get_event_stream(&self) -> Result<CollectorStream<'_, TestEvent>> {
+            let events = self.events.clone();
+            Ok(Box::pin(tokio_stream::iter(events)))
+        }
+    }
+
+    // Mock strategy implementation
+    struct MockStrategy {
+        state: Arc<Mutex<u64>>,
+    }
+
+    #[async_trait]
+    impl Strategy<TestEvent, TestAction> for MockStrategy {
+        async fn sync_state(&mut self) -> Result<()> {
+            let mut state = self.state.lock().await;
+            *state = 0;
+            Ok(())
+        }
+
+        async fn process_event(&mut self, event: TestEvent) -> Vec<TestAction> {
+            let mut state = self.state.lock().await;
+            *state += event.0;
+            vec![TestAction(format!("processed_{}", event.0))]
+        }
+    }
+
+    // Mock executor implementation
+    struct MockExecutor {
+        executed_actions: Arc<Mutex<Vec<TestAction>>>,
+    }
+
+    #[async_trait]
+    impl Executor<TestAction> for MockExecutor {
+        async fn execute(&self, action: TestAction) -> Result<()> {
+            let mut actions = self.executed_actions.lock().await;
+            actions.push(action);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_collector() {
+        let collector = MockCollector {
+            events: vec![TestEvent(1), TestEvent(2), TestEvent(3)],
+        };
+
+        let mut stream = collector.get_event_stream().await.unwrap();
+        let mut events = Vec::new();
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+
+        assert_eq!(events, vec![TestEvent(1), TestEvent(2), TestEvent(3)]);
+    }
+
+    #[tokio::test]
+    async fn test_strategy() {
+        let state = Arc::new(Mutex::new(0));
+        let mut strategy = MockStrategy {
+            state: Arc::clone(&state),
+        };
+
+        // Test state synchronization
+        strategy.sync_state().await.unwrap();
+        assert_eq!(*state.lock().await, 0);
+
+        // Test event processing
+        let actions = strategy.process_event(TestEvent(5)).await;
+        assert_eq!(actions, vec![TestAction("processed_5".to_string())]);
+        assert_eq!(*state.lock().await, 5);
+    }
+
+    #[tokio::test]
+    async fn test_executor() {
+        let executed_actions = Arc::new(Mutex::new(Vec::new()));
+        let executor = MockExecutor {
+            executed_actions: Arc::clone(&executed_actions),
+        };
+
+        let action = TestAction("test_action".to_string());
+        executor.execute(action.clone()).await.unwrap();
+
+        let actions = executed_actions.lock().await;
+        assert_eq!(*actions, vec![action]);
+    }
+
+    #[tokio::test]
+    async fn test_collector_map() {
+        let collector = MockCollector {
+            events: vec![TestEvent(1), TestEvent(2)],
+        };
+
+        let mapped_collector = CollectorMap::new(Box::new(collector), |event: TestEvent| {
+            TestEvent(event.0 * 2)
+        });
+
+        let mut stream = mapped_collector.get_event_stream().await.unwrap();
+        let mut events = Vec::new();
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+
+        assert_eq!(events, vec![TestEvent(2), TestEvent(4)]);
+    }
+
+    #[tokio::test]
+    async fn test_executor_map() {
+        let executed_actions = Arc::new(Mutex::new(Vec::new()));
+        let executor = MockExecutor {
+            executed_actions: Arc::clone(&executed_actions),
+        };
+
+        let mapped_executor = ExecutorMap::new(Box::new(executor), |action: TestAction| {
+            Some(TestAction(format!("mapped_{}", action.0)))
+        });
+
+        let action = TestAction("test".to_string());
+        mapped_executor.execute(action).await.unwrap();
+
+        let actions = executed_actions.lock().await;
+        assert_eq!(*actions, vec![TestAction("mapped_test".to_string())]);
     }
 }

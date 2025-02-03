@@ -27,20 +27,52 @@
 //!
 //! ```rust,no_run
 //! use botcore::{Engine, Result};
-//! use botcore::types::{Collector, Strategy, Executor};
+//! use botcore::types::{Collector, CollectorStream, Strategy, Executor};
+//! use async_trait::async_trait;
+//! use tokio_stream;
 //!
-//! # struct MyEvent;
-//! # struct MyAction;
-//! # struct MyCollector;
-//! # struct MyStrategy;
-//! # struct MyExecutor;
-//! # impl Collector<MyEvent> for MyCollector { }
-//! # impl Strategy<MyEvent, MyAction> for MyStrategy { }
-//! # impl Executor<MyAction> for MyExecutor { }
+//! #[derive(Debug, Clone)]
+//! struct MyEvent;
+//!
+//! #[derive(Debug, Clone)]
+//! struct MyAction;
+//!
+//! struct MyCollector;
+//!
+//! #[async_trait]
+//! impl Collector<MyEvent> for MyCollector {
+//!     async fn get_event_stream(&self) -> Result<CollectorStream<'_, MyEvent>> {
+//!         // For example purposes, create an empty stream
+//!         let events = Vec::<MyEvent>::new();
+//!         Ok(Box::pin(tokio_stream::iter(events)))
+//!     }
+//! }
+//!
+//! struct MyStrategy;
+//!
+//! #[async_trait]
+//! impl Strategy<MyEvent, MyAction> for MyStrategy {
+//!     async fn sync_state(&mut self) -> Result<()> {
+//!         Ok(())
+//!     }
+//!
+//!     async fn process_event(&mut self, _event: MyEvent) -> Vec<MyAction> {
+//!         vec![]
+//!     }
+//! }
+//!
+//! struct MyExecutor;
+//!
+//! #[async_trait]
+//! impl Executor<MyAction> for MyExecutor {
+//!     async fn execute(&self, _action: MyAction) -> Result<()> {
+//!         Ok(())
+//!     }
+//! }
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
-//!     // Create a new engine
+//!     // Create a new engine with custom channel capacities
 //!     let mut engine = Engine::<MyEvent, MyAction>::new()
 //!         .with_event_channel_capacity(1024)
 //!         .with_action_channel_capacity(1024);
@@ -51,13 +83,18 @@
 //!     engine.add_executor(Box::new(MyExecutor));
 //!     
 //!     // Run the engine
-//!     let join_set = engine.run().await?;
+//!     let mut join_set = engine.run().await?;
 //!     
 //!     // Wait for all tasks to complete
-//!     join_set.await;
+//!     while join_set.join_next().await.is_some() {}
 //!     Ok(())
 //! }
 //! ```
+
+#[cfg(test)]
+use criterion as _;
+#[cfg(test)]
+use futures as _;
 
 /// Core engine implementation that orchestrates event flow
 pub mod engine;
@@ -71,4 +108,5 @@ pub mod metrics;
 /// Core traits and types
 pub mod types;
 
+pub use engine::Engine;
 pub use error::{BotError, Result};
