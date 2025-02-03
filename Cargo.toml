@@ -9,3 +9,4 @@ async-trait = "0.1"
 tokio-stream = "0.1"
 tokio = { version = "1.32", features = ["full"] }
 tracing = "0.1"
+thiserror = "2.0.11"
