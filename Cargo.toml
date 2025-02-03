@@ -2,6 +2,23 @@
 name = "botcore"
 version = "0.1.0"
 edition = "2021"
+description = "An event-driven, asynchronous bot orchestration engine in Rust"
+authors = ["ss-sonic <shubham@routerprotocol.com>"]
+license = "MIT"
+repository = "https://github.com/ss-sonic/botcore"
+documentation = "https://docs.rs/botcore"
+readme = "README.md"
+keywords = [
+    "bot",
+    "async",
+    "trading",
+    "engine",
+    "orchestration",
+    "sniper",
+    "mev",
+    "arbitrage",
+]
+categories = ["asynchronous", "development-tools", "trading"]
 
 [dependencies]
 anyhow = "1.0"
@@ -14,5 +31,4 @@ prometheus = { version = "0.13", optional = true }
 tracing-subscriber = { version = "0.3", optional = true }
 once_cell = { version = "1.17", optional = true }
 [features]
-# When enabled, the metrics code will be compiled in.
 metrics = ["prometheus", "once_cell"]
