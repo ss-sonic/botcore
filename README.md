@@ -49,7 +49,7 @@ Add `botcore` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-botcore = "0.1.0"
+botcore = "0.1.2"
 tokio = { version = "1.0", features = ["full"] }
 ```
 
