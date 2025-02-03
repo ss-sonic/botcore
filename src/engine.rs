@@ -114,7 +114,7 @@ impl<E, A> Engine<E, A> {
     /// - Event channel: 512 events
     /// - Action channel: 512 actions
     /// 
-    /// Use [`with_event_channel_capacity`] and [`with_action_channel_capacity`]
+    /// Use [`Engine::with_event_channel_capacity`] and [`Engine::with_action_channel_capacity`]
     /// to customize these values.
     pub fn new() -> Self {
         Self {

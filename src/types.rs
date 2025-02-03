@@ -4,7 +4,7 @@ use std::pin::Pin;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 
-/// A stream of events emitted by a [Collector](Collector).
+/// A stream of events emitted by a [Collector].
 ///
 /// This type alias represents an asynchronous stream of events that can be
 /// consumed by the engine. The stream is boxed and pinned to allow for

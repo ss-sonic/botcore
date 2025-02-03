@@ -20,7 +20,7 @@
 //! - [`Strategy`](types::Strategy): Components that process events and decide on actions
 //! - [`Executor`](types::Executor): Components that execute actions
 //!
-//! These components are orchestrated by the [`Engine`](engine::Engine), which manages
+//! These components are orchestrated by the [`Engine`], which manages
 //! the flow of events and actions through the system.
 //!
 //! # Example
