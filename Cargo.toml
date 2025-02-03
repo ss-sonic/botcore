@@ -8,8 +8,8 @@ license = "MIT"
 repository = "https://github.com/ss-sonic/botcore"
 documentation = "https://docs.rs/botcore"
 readme = "README.md"
-keywords = ["bot", "sniper", "engine", "mev", "arbitrage"]
-categories = ["asynchronous", "development-tools", "trading"]
+keywords = ["bot", "trading", "engine", "mev", "arbitrage"]
+categories = ["asynchronous", "development-tools"]
 
 [dependencies]
 anyhow = "1.0"
