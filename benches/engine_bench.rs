@@ -4,6 +4,7 @@ use botcore::{
     types::{Collector, CollectorStream, Executor, Strategy},
 };
 use criterion::{criterion_group, criterion_main, Criterion};
+use futures::stream::FuturesUnordered;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
@@ -23,41 +24,59 @@ struct BenchCollector {
 #[async_trait]
 impl Collector<BenchEvent> for BenchCollector {
     async fn get_event_stream(&self) -> Result<CollectorStream<'_, BenchEvent>> {
-        let events = (0..self.num_events).map(|i| BenchEvent(i as u64));
+        // Pre-allocate events vector
+        let mut events = Vec::with_capacity(self.num_events);
+        events.extend((0..self.num_events).map(|i| BenchEvent(i as u64)));
         Ok(Box::pin(tokio_stream::iter(events)))
     }
 }
 
-// Fast strategy for benchmarking
+// Fast strategy for benchmarking using atomic state
 struct BenchStrategy {
-    state: Arc<Mutex<u64>>,
+    state: std::sync::atomic::AtomicU64,
+}
+
+impl BenchStrategy {
+    fn new() -> Self {
+        Self {
+            state: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
 }
 
 #[async_trait]
 impl Strategy<BenchEvent, BenchAction> for BenchStrategy {
     async fn sync_state(&mut self) -> Result<()> {
-        let mut state = self.state.lock().await;
-        *state = 0;
+        self.state.store(0, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
     async fn process_event(&mut self, event: BenchEvent) -> Vec<BenchAction> {
-        let mut state = self.state.lock().await;
-        *state += event.0;
-        vec![BenchAction(*state)]
+        let new_state = self
+            .state
+            .fetch_add(event.0, std::sync::atomic::Ordering::Relaxed);
+        vec![BenchAction(new_state + event.0)]
     }
 }
 
 // Fast executor for benchmarking
 struct BenchExecutor {
-    executed_actions: Arc<Mutex<Vec<BenchAction>>>,
+    executed_actions: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl BenchExecutor {
+    fn new() -> Self {
+        Self {
+            executed_actions: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
 }
 
 #[async_trait]
 impl Executor<BenchAction> for BenchExecutor {
-    async fn execute(&self, action: BenchAction) -> Result<()> {
-        let mut actions = self.executed_actions.lock().await;
-        actions.push(action);
+    async fn execute(&self, _action: BenchAction) -> Result<()> {
+        self.executed_actions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 }
@@ -68,18 +87,10 @@ fn bench_event_processing(c: &mut Criterion) {
     c.bench_function("event_processing", |b| {
         b.iter(|| {
             rt.block_on(async {
-                // Set up benchmark components
                 let collector = BenchCollector { num_events: 1000 };
-                let state = Arc::new(Mutex::new(0));
-                let mut strategy = BenchStrategy {
-                    state: Arc::clone(&state),
-                };
-                let executed_actions = Arc::new(Mutex::new(Vec::new()));
-                let executor = BenchExecutor {
-                    executed_actions: Arc::clone(&executed_actions),
-                };
+                let mut strategy = BenchStrategy::new();
+                let executor = BenchExecutor::new();
 
-                // Process events through the pipeline
                 let mut event_stream = collector.get_event_stream().await.unwrap();
                 while let Some(event) = tokio_stream::StreamExt::next(&mut event_stream).await {
                     let actions = strategy.process_event(event).await;
@@ -88,34 +99,27 @@ fn bench_event_processing(c: &mut Criterion) {
                     }
                 }
 
-                // Verify results
-                let actions = executed_actions.lock().await;
-                assert_eq!(actions.len(), 1000);
+                assert_eq!(
+                    executor
+                        .executed_actions
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    1000
+                );
             });
         });
     });
 }
 
 fn bench_concurrent_processing(c: &mut Criterion) {
-    use futures::stream::FuturesUnordered;
-
     let rt = Runtime::new().unwrap();
 
     c.bench_function("concurrent_processing", |b| {
         b.iter(|| {
             rt.block_on(async {
-                // Set up benchmark components
                 let collector = BenchCollector { num_events: 1000 };
-                let state = Arc::new(Mutex::new(0));
-                let strategy = Arc::new(Mutex::new(BenchStrategy {
-                    state: Arc::clone(&state),
-                }));
-                let executed_actions = Arc::new(Mutex::new(Vec::new()));
-                let executor = Arc::new(BenchExecutor {
-                    executed_actions: Arc::clone(&executed_actions),
-                });
+                let strategy = Arc::new(Mutex::new(BenchStrategy::new()));
+                let executor = Arc::new(BenchExecutor::new());
 
-                // Process events concurrently
                 let mut event_stream = collector.get_event_stream().await.unwrap();
                 let mut futures = FuturesUnordered::new();
 
@@ -132,12 +136,14 @@ fn bench_concurrent_processing(c: &mut Criterion) {
                     });
                 }
 
-                // Wait for all processing to complete
                 while let Some(_) = futures::StreamExt::next(&mut futures).await {}
 
-                // Verify results
-                let actions = executed_actions.lock().await;
-                assert_eq!(actions.len(), 1000);
+                assert_eq!(
+                    executor
+                        .executed_actions
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    1000
+                );
             });
         });
     });
@@ -151,38 +157,28 @@ fn bench_metrics_collection(c: &mut Criterion) {
     c.bench_function("metrics_collection", |b| {
         b.iter(|| {
             rt.block_on(async {
-                // Set up benchmark components with metrics tracking
                 let collector = BenchCollector { num_events: 1000 };
-                let state = Arc::new(Mutex::new(0));
-                let mut strategy = BenchStrategy {
-                    state: Arc::clone(&state),
-                };
-                let executed_actions = Arc::new(Mutex::new(Vec::new()));
-                let executor = BenchExecutor {
-                    executed_actions: Arc::clone(&executed_actions),
-                };
+                let mut strategy = BenchStrategy::new();
+                let executor = BenchExecutor::new();
 
-                // Process events while tracking metrics
+                let start = Instant::now();
                 let mut event_stream = collector.get_event_stream().await.unwrap();
-                let mut total_processing_time = 0u128;
-                let mut event_count = 0;
 
                 while let Some(event) = tokio_stream::StreamExt::next(&mut event_stream).await {
-                    let start = Instant::now();
-
                     let actions = strategy.process_event(event).await;
                     for action in actions {
                         executor.execute(action).await.unwrap();
                     }
-
-                    total_processing_time += start.elapsed().as_nanos();
-                    event_count += 1;
                 }
 
-                // Calculate and verify metrics
-                let avg_processing_time = total_processing_time / event_count as u128;
-                assert!(avg_processing_time > 0);
-                assert_eq!(event_count, 1000);
+                let total_time = start.elapsed().as_nanos();
+                assert!(total_time > 0);
+                assert_eq!(
+                    executor
+                        .executed_actions
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    1000
+                );
             });
         });
     });
