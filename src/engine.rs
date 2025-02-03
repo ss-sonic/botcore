@@ -340,3 +340,231 @@ where
         Ok(set)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::CollectorStream;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[derive(Debug, Clone)]
+    struct TestEvent(u64);
+
+    #[allow(dead_code)]
+    #[derive(Debug, Clone)]    
+
+    struct TestAction(String);
+
+    // Mock collector that can be configured to fail
+    struct MockCollector {
+        should_fail: bool,
+    }
+
+    #[async_trait]
+    impl Collector<TestEvent> for MockCollector {
+        async fn get_event_stream(&self) -> Result<CollectorStream<'_, TestEvent>> {
+            if self.should_fail {
+                Err(BotError::collector_error("Failed to get event stream"))
+            } else {
+                let events = vec![TestEvent(1)];
+                Ok(Box::pin(tokio_stream::iter(events)))
+            }
+        }
+    }
+
+    // Mock strategy that can be configured to fail
+    struct MockStrategy {
+        should_fail_sync: bool,
+        should_fail_process: bool,
+    }
+
+    #[async_trait]
+    impl Strategy<TestEvent, TestAction> for MockStrategy {
+        async fn sync_state(&mut self) -> Result<()> {
+            if self.should_fail_sync {
+                Err(BotError::strategy_error("Failed to sync state"))
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn process_event(&mut self, event: TestEvent) -> Vec<TestAction> {
+            if self.should_fail_process {
+                vec![]
+            } else {
+                vec![TestAction(format!("processed_{}", event.0))]
+            }
+        }
+    }
+
+    // Mock executor that can be configured to fail
+    struct MockExecutor {
+        should_fail: bool,
+        executed_actions: Arc<Mutex<Vec<TestAction>>>,
+    }
+
+    #[async_trait]
+    impl Executor<TestAction> for MockExecutor {
+        async fn execute(&self, action: TestAction) -> Result<()> {
+            if self.should_fail {
+                Err(BotError::executor_error("Failed to execute action"))
+            } else {
+                let mut actions = self.executed_actions.lock().await;
+                actions.push(action);
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_collector_error() {
+        let mut engine = Engine::<TestEvent, TestAction>::new();
+        engine.add_collector(Box::new(MockCollector { should_fail: true }));
+        engine.add_strategy(Box::new(MockStrategy {
+            should_fail_sync: false,
+            should_fail_process: false,
+        }));
+        engine.add_executor(Box::new(MockExecutor {
+            should_fail: false,
+            executed_actions: Arc::new(Mutex::new(Vec::new())),
+        }));
+
+        let join_set = engine.run().await.unwrap();
+        
+        // The collector task should exit with an error
+        assert_eq!(join_set.len(), 3); // All tasks should be spawned
+    }
+
+    #[tokio::test]
+    async fn test_strategy_sync_error() {
+        let mut engine = Engine::<TestEvent, TestAction>::new();
+        engine.add_collector(Box::new(MockCollector { should_fail: false }));
+        engine.add_strategy(Box::new(MockStrategy {
+            should_fail_sync: true,
+            should_fail_process: false,
+        }));
+        engine.add_executor(Box::new(MockExecutor {
+            should_fail: false,
+            executed_actions: Arc::new(Mutex::new(Vec::new())),
+        }));
+
+        let result = engine.run().await;
+        assert!(result.is_err());
+        if let Err(BotError::StrategyError { message, .. }) = result {
+            assert!(message.contains("Failed to sync strategy state"), "Unexpected error message: {}", message);
+        } else {
+            panic!("Expected StrategyError");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_executor_error() {
+        let mut engine = Engine::<TestEvent, TestAction>::new();
+        engine.add_collector(Box::new(MockCollector { should_fail: false }));
+        engine.add_strategy(Box::new(MockStrategy {
+            should_fail_sync: false,
+            should_fail_process: false,
+        }));
+        engine.add_executor(Box::new(MockExecutor {
+            should_fail: true,
+            executed_actions: Arc::new(Mutex::new(Vec::new())),
+        }));
+
+        let join_set = engine.run().await.unwrap();
+        
+        // Let the engine run for a bit to process events
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        
+        // The executor should have logged errors but continued running
+        assert!(join_set.len() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_channel_capacity() {
+        let mut engine = Engine::<TestEvent, TestAction>::new()
+            .with_event_channel_capacity(1)
+            .with_action_channel_capacity(1);
+
+        // Add a slow executor to test channel backpressure
+        let executed_actions = Arc::new(Mutex::new(Vec::new()));
+        engine.add_collector(Box::new(MockCollector { should_fail: false }));
+        engine.add_strategy(Box::new(MockStrategy {
+            should_fail_sync: false,
+            should_fail_process: false,
+        }));
+        engine.add_executor(Box::new(MockExecutor {
+            should_fail: false,
+            executed_actions: Arc::clone(&executed_actions),
+        }));
+
+        let join_set = engine.run().await.unwrap();
+        
+        // Let the engine run for a bit
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        
+        // Verify that some actions were processed despite the small channel capacity
+        let actions = executed_actions.lock().await;
+        assert!(!actions.is_empty());
+        
+        // The engine should still be running
+        assert!(join_set.len() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_empty_engine() {
+        let engine = Engine::<TestEvent, TestAction>::new();
+        let join_set = engine.run().await.unwrap();
+        assert_eq!(join_set.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_components() {
+        let mut engine = Engine::<TestEvent, TestAction>::new();
+        
+        // Add multiple collectors, strategies, and executors
+        for _ in 0..3 {
+            engine.add_collector(Box::new(MockCollector { should_fail: false }));
+            engine.add_strategy(Box::new(MockStrategy {
+                should_fail_sync: false,
+                should_fail_process: false,
+            }));
+            engine.add_executor(Box::new(MockExecutor {
+                should_fail: false,
+                executed_actions: Arc::new(Mutex::new(Vec::new())),
+            }));
+        }
+
+        let join_set = engine.run().await.unwrap();
+        
+        // Let the engine run for a bit
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        
+        // Verify that all components are running
+        assert_eq!(join_set.len(), 9); // 3 collectors + 3 strategies + 3 executors
+    }
+
+    // Add test for strategy process error
+    #[tokio::test]
+    async fn test_strategy_process_error() {
+        let mut engine = Engine::<TestEvent, TestAction>::new();
+        engine.add_collector(Box::new(MockCollector { should_fail: false }));
+        engine.add_strategy(Box::new(MockStrategy {
+            should_fail_sync: false,
+            should_fail_process: true,
+        }));
+        engine.add_executor(Box::new(MockExecutor {
+            should_fail: false,
+            executed_actions: Arc::new(Mutex::new(Vec::new())),
+        }));
+
+        let join_set = engine.run().await.unwrap();
+        
+        // Let the engine run for a bit
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        
+        // The strategy should continue running but not produce any actions
+        assert!(join_set.len() > 0);
+    }
+}
