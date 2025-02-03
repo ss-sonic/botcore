@@ -2,9 +2,14 @@ use tokio::sync::broadcast::{self, Sender};
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
 use tracing::{error, info};
+use std::time::Instant;
 
 use crate::error::{BotError, Result};
 use crate::types::{Collector, Executor, Strategy};
+use crate::metrics::{
+    ACTION_EXECUTION_DURATION, ACTION_QUEUE_SIZE, ACTIONS_EXECUTED_TOTAL,
+    ERROR_COUNT, EVENT_PROCESSING_DURATION, EVENT_QUEUE_SIZE, EVENTS_PROCESSED_TOTAL,
+};
 
 /// The main engine of Artemis. This struct is responsible for orchestrating the
 /// data flow between collectors, strategies, and executors.
@@ -83,34 +88,58 @@ where
         let mut set = JoinSet::new();
 
         // Spawn executors in separate threads.
-        for executor in self.executors {
+        for (idx, executor) in self.executors.into_iter().enumerate() {
             let mut receiver = action_sender.subscribe();
+            let executor_label = format!("executor_{}", idx);
+            
             set.spawn(async move {
                 info!("starting executor... ");
                 loop {
                     match receiver.recv().await {
                         Ok(action) => {
+                            let start = Instant::now();
                             if let Err(e) = executor.execute(action).await {
+                                ERROR_COUNT
+                                    .with_label_values(&["executor", "execution_error"])
+                                    .inc();
                                 error!(
                                     error = %BotError::executor_error_with_source("Failed to execute action", e),
                                     "executor error"
                                 );
+                            } else {
+                                let duration = start.elapsed().as_secs_f64();
+                                ACTION_EXECUTION_DURATION
+                                    .with_label_values(&[&executor_label])
+                                    .observe(duration);
+                                ACTIONS_EXECUTED_TOTAL
+                                    .with_label_values(&[&executor_label])
+                                    .inc();
                             }
                         }
-                        Err(e) => error!(
-                            error = %BotError::channel_error(format!("Failed to receive action: {}", e)),
-                            "channel error"
-                        ),
+                        Err(e) => {
+                            ERROR_COUNT
+                                .with_label_values(&["executor", "channel_error"])
+                                .inc();
+                            error!(
+                                error = %BotError::channel_error(format!("Failed to receive action: {}", e)),
+                                "channel error"
+                            );
+                        }
                     }
                 }
             });
         }
 
         // Spawn strategies in separate threads.
-        for mut strategy in self.strategies {
+        for (idx, mut strategy) in self.strategies.into_iter().enumerate() {
             let mut event_receiver = event_sender.subscribe();
             let action_sender = action_sender.clone();
+            let strategy_label = format!("strategy_{}", idx);
+            
             strategy.sync_state().await.map_err(|e| {
+                ERROR_COUNT
+                    .with_label_values(&["strategy", "sync_error"])
+                    .inc();
                 BotError::strategy_error_with_source("Failed to sync strategy state", e)
             })?;
 
@@ -119,32 +148,58 @@ where
                 loop {
                     match event_receiver.recv().await {
                         Ok(event) => {
-                            for action in strategy.process_event(event).await {
+                            let start = Instant::now();
+                            let actions = strategy.process_event(event).await;
+                            let duration = start.elapsed().as_secs_f64();
+                            
+                            EVENT_PROCESSING_DURATION
+                                .with_label_values(&[&strategy_label])
+                                .observe(duration);
+
+                            for action in actions {
                                 if let Err(e) = action_sender.send(action) {
+                                    ERROR_COUNT
+                                        .with_label_values(&["strategy", "channel_error"])
+                                        .inc();
                                     error!(
                                         error = %BotError::channel_error(format!("Failed to send action: {}", e)),
                                         "channel error"
                                     );
                                 }
                             }
+
+                            // Update queue size metrics
+                            ACTION_QUEUE_SIZE
+                                .with_label_values(&[&strategy_label])
+                                .set(action_sender.len() as i64);
                         }
-                        Err(e) => error!(
-                            error = %BotError::channel_error(format!("Failed to receive event: {}", e)),
-                            "channel error"
-                        ),
+                        Err(e) => {
+                            ERROR_COUNT
+                                .with_label_values(&["strategy", "channel_error"])
+                                .inc();
+                            error!(
+                                error = %BotError::channel_error(format!("Failed to receive event: {}", e)),
+                                "channel error"
+                            );
+                        }
                     }
                 }
             });
         }
 
         // Spawn collectors in separate threads.
-        for collector in self.collectors {
+        for (idx, collector) in self.collectors.into_iter().enumerate() {
             let event_sender = event_sender.clone();
+            let collector_label = format!("collector_{}", idx);
+            
             set.spawn(async move {
                 info!("starting collector... ");
                 let mut event_stream = match collector.get_event_stream().await {
                     Ok(stream) => stream,
                     Err(e) => {
+                        ERROR_COUNT
+                            .with_label_values(&["collector", "stream_error"])
+                            .inc();
                         error!(
                             error = %BotError::collector_error_with_source("Failed to get event stream", e),
                             "collector error"
@@ -155,10 +210,22 @@ where
 
                 while let Some(event) = event_stream.next().await {
                     if let Err(e) = event_sender.send(event) {
+                        ERROR_COUNT
+                            .with_label_values(&["collector", "channel_error"])
+                            .inc();
                         error!(
                             error = %BotError::channel_error(format!("Failed to send event: {}", e)),
                             "channel error"
                         );
+                    } else {
+                        EVENTS_PROCESSED_TOTAL
+                            .with_label_values(&[&collector_label])
+                            .inc();
+                        
+                        // Update queue size metrics
+                        EVENT_QUEUE_SIZE
+                            .with_label_values(&[&collector_label])
+                            .set(event_sender.len() as i64);
                     }
                 }
             });
