@@ -10,6 +10,9 @@ tokio-stream = "0.1"
 tokio = { version = "1.32", features = ["full"] }
 tracing = "0.1"
 thiserror = "2.0.11"
-prometheus = "0.13"
-lazy_static = "1.4"
-hyper = { version = "0.14", features = ["full"] }
+prometheus = { version = "0.13", optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
+once_cell = { version = "1.17", optional = true }
+[features]
+# When enabled, the metrics code will be compiled in.
+metrics = ["prometheus", "once_cell"]

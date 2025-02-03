@@ -6,13 +6,55 @@ use std::time::Instant;
 
 use crate::error::{BotError, Result};
 use crate::types::{Collector, Executor, Strategy};
-use crate::metrics::{
-    ACTION_EXECUTION_DURATION, ACTION_QUEUE_SIZE, ACTIONS_EXECUTED_TOTAL,
-    ERROR_COUNT, EVENT_PROCESSING_DURATION, EVENT_QUEUE_SIZE, EVENTS_PROCESSED_TOTAL,
-};
+use crate::metrics::METRICS;
 
-/// The main engine of Artemis. This struct is responsible for orchestrating the
-/// data flow between collectors, strategies, and executors.
+/// The main orchestrator that manages the flow of events and actions through the system.
+/// 
+/// The `Engine` is responsible for:
+/// - Managing the lifecycle of collectors, strategies, and executors
+/// - Coordinating the flow of events from collectors to strategies
+/// - Coordinating the flow of actions from strategies to executors
+/// - Handling errors and metrics collection
+/// 
+/// # Type Parameters
+/// 
+/// * `E` - The type of events that flow through the system
+/// * `A` - The type of actions that flow through the system
+/// 
+/// # Example
+/// 
+/// ```rust
+/// use botcore::{Engine, Result};
+/// use botcore::types::{Collector, Strategy, Executor};
+/// 
+/// # struct BlockEvent;
+/// # struct TradeAction;
+/// # struct BlockCollector;
+/// # struct TradingStrategy;
+/// # struct TradeExecutor;
+/// # impl Collector<BlockEvent> for BlockCollector { }
+/// # impl Strategy<BlockEvent, TradeAction> for TradingStrategy { }
+/// # impl Executor<TradeAction> for TradeExecutor { }
+/// 
+/// async fn run_bot() -> Result<()> {
+///     // Create a new engine with custom channel capacities
+///     let mut engine = Engine::<BlockEvent, TradeAction>::new()
+///         .with_event_channel_capacity(1024)
+///         .with_action_channel_capacity(1024);
+///     
+///     // Add components
+///     engine.add_collector(Box::new(BlockCollector));
+///     engine.add_strategy(Box::new(TradingStrategy));
+///     engine.add_executor(Box::new(TradeExecutor));
+///     
+///     // Run the engine
+///     let join_set = engine.run().await?;
+///     
+///     // Wait for all tasks to complete
+///     join_set.await;
+///     Ok(())
+/// }
+/// ```
 pub struct Engine<E, A> {
     /// The set of collectors that the engine will use to collect events.
     collectors: Vec<Box<dyn Collector<E>>>,
@@ -31,6 +73,14 @@ pub struct Engine<E, A> {
 }
 
 impl<E, A> Engine<E, A> {
+    /// Creates a new engine with default channel capacities.
+    /// 
+    /// The default capacities are:
+    /// - Event channel: 512 events
+    /// - Action channel: 512 actions
+    /// 
+    /// Use [`with_event_channel_capacity`] and [`with_action_channel_capacity`]
+    /// to customize these values.
     pub fn new() -> Self {
         Self {
             collectors: vec![],
@@ -41,11 +91,27 @@ impl<E, A> Engine<E, A> {
         }
     }
 
+    /// Sets the capacity of the event channel.
+    /// 
+    /// The event channel is used to buffer events between collectors and
+    /// strategies. If the channel becomes full, collectors will be backpressured.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `capacity` - The maximum number of events that can be buffered
     pub fn with_event_channel_capacity(mut self, capacity: usize) -> Self {
         self.event_channel_capacity = capacity;
         self
     }
 
+    /// Sets the capacity of the action channel.
+    /// 
+    /// The action channel is used to buffer actions between strategies and
+    /// executors. If the channel becomes full, strategies will be backpressured.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `capacity` - The maximum number of actions that can be buffered
     pub fn with_action_channel_capacity(mut self, capacity: usize) -> Self {
         self.action_channel_capacity = capacity;
         self
@@ -63,24 +129,54 @@ where
     E: Send + Clone + 'static + std::fmt::Debug,
     A: Send + Clone + 'static + std::fmt::Debug,
 {
-    /// Adds a collector to be used by the engine.
+    /// Adds a collector to the engine.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `collector` - The collector to add
     pub fn add_collector(&mut self, collector: Box<dyn Collector<E>>) {
         self.collectors.push(collector);
     }
 
-    /// Adds a strategy to be used by the engine.
+    /// Adds a strategy to the engine.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `strategy` - The strategy to add
     pub fn add_strategy(&mut self, strategy: Box<dyn Strategy<E, A>>) {
         self.strategies.push(strategy);
     }
 
-    /// Adds an executor to be used by the engine.
+    /// Adds an executor to the engine.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `executor` - The executor to add
     pub fn add_executor(&mut self, executor: Box<dyn Executor<A>>) {
         self.executors.push(executor);
     }
 
-    /// The core run loop of the engine. This function will spawn a thread for
-    /// each collector, strategy, and executor. It will then orchestrate the
-    /// data flow between them.
+    /// Starts the engine and returns a set of tasks that can be awaited.
+    /// 
+    /// This method:
+    /// 1. Creates channels for events and actions
+    /// 2. Spawns tasks for each collector, strategy, and executor
+    /// 3. Returns a [`JoinSet`] containing all spawned tasks
+    /// 
+    /// The engine will continue running until one of:
+    /// - A collector's event stream ends
+    /// - A fatal error occurs
+    /// - The returned [`JoinSet`] is dropped
+    /// 
+    /// # Returns
+    /// 
+    /// A [`JoinSet`] containing all spawned tasks. The caller should await this
+    /// set to keep the engine running.
+    /// 
+    /// # Errors
+    /// 
+    /// This method will return an error if any strategy fails to sync its initial
+    /// state.
     pub async fn run(self) -> Result<JoinSet<()>> {
         let (event_sender, _): (Sender<E>, _) = broadcast::channel(self.event_channel_capacity);
         let (action_sender, _): (Sender<A>, _) = broadcast::channel(self.action_channel_capacity);
@@ -99,27 +195,20 @@ where
                         Ok(action) => {
                             let start = Instant::now();
                             if let Err(e) = executor.execute(action).await {
-                                ERROR_COUNT
-                                    .with_label_values(&["executor", "execution_error"])
-                                    .inc();
+                                METRICS.record_error(&executor_label, "execution_error");
                                 error!(
                                     error = %BotError::executor_error_with_source("Failed to execute action", e),
                                     "executor error"
                                 );
                             } else {
                                 let duration = start.elapsed().as_secs_f64();
-                                ACTION_EXECUTION_DURATION
-                                    .with_label_values(&[&executor_label])
-                                    .observe(duration);
-                                ACTIONS_EXECUTED_TOTAL
-                                    .with_label_values(&[&executor_label])
-                                    .inc();
+
+                                METRICS.record_action_execution(&executor_label, duration);
+                                METRICS.inc_actions_executed(&executor_label);
                             }
                         }
                         Err(e) => {
-                            ERROR_COUNT
-                                .with_label_values(&["executor", "channel_error"])
-                                .inc();
+                            METRICS.record_error(&executor_label, "channel_error");
                             error!(
                                 error = %BotError::channel_error(format!("Failed to receive action: {}", e)),
                                 "channel error"
@@ -137,9 +226,7 @@ where
             let strategy_label = format!("strategy_{}", idx);
             
             strategy.sync_state().await.map_err(|e| {
-                ERROR_COUNT
-                    .with_label_values(&["strategy", "sync_error"])
-                    .inc();
+                METRICS.record_error(&strategy_label, "sync_error");
                 BotError::strategy_error_with_source("Failed to sync strategy state", e)
             })?;
 
@@ -152,15 +239,11 @@ where
                             let actions = strategy.process_event(event).await;
                             let duration = start.elapsed().as_secs_f64();
                             
-                            EVENT_PROCESSING_DURATION
-                                .with_label_values(&[&strategy_label])
-                                .observe(duration);
+                            METRICS.record_event_processing(&strategy_label, duration);
 
                             for action in actions {
                                 if let Err(e) = action_sender.send(action) {
-                                    ERROR_COUNT
-                                        .with_label_values(&["strategy", "channel_error"])
-                                        .inc();
+                                    METRICS.record_error(&strategy_label, "channel_error");
                                     error!(
                                         error = %BotError::channel_error(format!("Failed to send action: {}", e)),
                                         "channel error"
@@ -169,14 +252,10 @@ where
                             }
 
                             // Update queue size metrics
-                            ACTION_QUEUE_SIZE
-                                .with_label_values(&[&strategy_label])
-                                .set(action_sender.len() as i64);
+                            METRICS.update_action_queue_size(&strategy_label, action_sender.len() as i64);
                         }
                         Err(e) => {
-                            ERROR_COUNT
-                                .with_label_values(&["strategy", "channel_error"])
-                                .inc();
+                            METRICS.record_error(&strategy_label, "channel_error");
                             error!(
                                 error = %BotError::channel_error(format!("Failed to receive event: {}", e)),
                                 "channel error"
@@ -197,9 +276,7 @@ where
                 let mut event_stream = match collector.get_event_stream().await {
                     Ok(stream) => stream,
                     Err(e) => {
-                        ERROR_COUNT
-                            .with_label_values(&["collector", "stream_error"])
-                            .inc();
+                        METRICS.record_error(&collector_label, "stream_error");
                         error!(
                             error = %BotError::collector_error_with_source("Failed to get event stream", e),
                             "collector error"
@@ -210,22 +287,16 @@ where
 
                 while let Some(event) = event_stream.next().await {
                     if let Err(e) = event_sender.send(event) {
-                        ERROR_COUNT
-                            .with_label_values(&["collector", "channel_error"])
-                            .inc();
+                        METRICS.record_error(&collector_label, "channel_error");
                         error!(
                             error = %BotError::channel_error(format!("Failed to send event: {}", e)),
                             "channel error"
                         );
                     } else {
-                        EVENTS_PROCESSED_TOTAL
-                            .with_label_values(&[&collector_label])
-                            .inc();
+                        METRICS.inc_events_processed(&collector_label);
                         
                         // Update queue size metrics
-                        EVENT_QUEUE_SIZE
-                            .with_label_values(&[&collector_label])
-                            .set(event_sender.len() as i64);
+                        METRICS.update_event_queue_size(&collector_label, event_sender.len() as i64);
                     }
                 }
             });
