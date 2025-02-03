@@ -163,6 +163,15 @@ mod metrics_impl {
         }
     }
 
+    /// The global metrics instance used throughout the crate.
+    ///
+    /// This instance provides access to all Prometheus metrics collectors:
+    /// - Action execution metrics (duration and count)
+    /// - Event processing metrics (duration and count)
+    /// - Queue size metrics (events and actions)
+    /// - Error tracking metrics
+    ///
+    /// When the `metrics` feature is enabled, this provides real Prometheus metrics collection.
     pub static METRICS: Lazy<Metrics> = Lazy::new(|| Metrics::new());
 }
 
