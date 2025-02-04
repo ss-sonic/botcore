@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
 
+# Add these permissions
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
