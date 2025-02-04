@@ -1,15 +1,22 @@
 [package]
 name = "botcore"
-version = "0.1.2"
+version = "1.0.0"
 edition = "2021"
-description = "An event-driven, asynchronous bot orchestration engine in Rust"
+rust-version = "1.84.1"
+description = "Production-grade asynchronous bot engine with enterprise observability features"
 authors = ["ss-sonic <shubham@routerprotocol.com>"]
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/ss-sonic/botcore"
 documentation = "https://docs.rs/botcore"
 readme = "README.md"
 keywords = ["bot", "trading", "engine", "mev", "arbitrage"]
-categories = ["asynchronous", "development-tools"]
+categories = [
+    "asynchronous",
+    "concurrency",
+    "development-tools::build-utils",
+    "network-programming",
+    "command-line-utilities",
+]
 
 [dependencies]
 anyhow = "1.0"

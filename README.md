@@ -45,12 +45,10 @@ A flexible and efficient bot engine framework for building event-driven bots in 
 
 ## Installation
 
-Add `botcore` to your `Cargo.toml`:
+Add `botcore` to your project using cargo:
 
-```toml
-[dependencies]
-botcore = "0.1.2"
-tokio = { version = "1.0", features = ["full"] }
+```sh
+cargo add botcore --features metrics
 ```
 
 ## Architecture
