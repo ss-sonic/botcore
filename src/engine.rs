@@ -28,6 +28,7 @@ use crate::metrics::METRICS;
 /// use botcore::types::{Collector, CollectorStream, Strategy, Executor};
 /// use async_trait::async_trait;
 /// use tokio_stream;
+/// use tracing::{info, error};
 /// 
 /// #[derive(Debug, Clone)]
 /// struct BlockEvent;
@@ -82,12 +83,22 @@ use crate::metrics::METRICS;
 ///     engine.add_strategy(Box::new(TradingStrategy));
 ///     engine.add_executor(Box::new(TradeExecutor));
 ///     
-///     // Run the engine
-///     let mut join_set = engine.run().await?;
-///     
-///     // Wait for all tasks to complete
-///     while join_set.join_next().await.is_some() {}
-///     Ok(())
+///     // Run the engine and handle task results
+///     match engine.run().await {
+///         Ok(mut set) => {
+///             while let Some(res) = set.join_next().await {
+///                 match res {
+///                     Ok(res) => info!("Task completed: {:?}", res),
+///                     Err(e) => info!("Task error: {:?}", e),
+///                 }
+///             }
+///             Ok(())
+///         }
+///         Err(e) => {
+///             error!("Engine run error: {:?}", e);
+///             Err(e)
+///         }
+///     }
 /// }
 /// ```
 pub struct Engine<E, A> {

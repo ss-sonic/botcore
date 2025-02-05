@@ -91,6 +91,7 @@ Action handlers that effect changes:
 use botcore::engine::Engine;
 use botcore::types::{Collector, Strategy, Executor};
 use botcore::Result;
+use tracing::{error, info};
 
 // 1. Define your types
 #[derive(Debug, Clone)]
@@ -139,8 +140,23 @@ async fn main() -> Result<()> {
     engine.add_strategy(Box::new(MyStrategy));
     engine.add_executor(Box::new(MyExecutor));
 
-    let join_set = engine.run().await?;
-    join_set.await;
+    match engine.run().await {
+        Ok(mut set) => {
+            while let Some(res) = set.join_next().await {
+                match res {
+                    Ok(res) => {
+                        info!("res: {:?}", res);
+                    }
+                    Err(e) => {
+                        info!("error: {:?}", e);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            error!("Engine run error: {:?}", e);
+        }
+    }
     Ok(())
 }
 ```
@@ -176,7 +192,6 @@ The engine can be configured through builder methods:
 let engine = Engine::new()
     .with_event_channel_capacity(1024)
     .with_action_channel_capacity(1024)
-    .with_metrics_enabled(true);
 ```
 
 ## Error Handling

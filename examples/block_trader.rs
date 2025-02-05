@@ -16,6 +16,7 @@ use botcore::types::{Collector, CollectorStream, Executor, Strategy};
 use botcore::Result;
 use std::time::Duration;
 use tokio::time;
+use tracing::{error, info};
 
 /// A simple event containing block information
 #[derive(Debug, Clone)]
@@ -132,7 +133,23 @@ async fn main() -> Result<()> {
     engine.add_executor(Box::new(TradeExecutor));
 
     // Run the engine
-    let _join_set = engine.run().await?;
+    match engine.run().await {
+        Ok(mut set) => {
+            while let Some(res) = set.join_next().await {
+                match res {
+                    Ok(res) => {
+                        info!("res: {:?}", res);
+                    }
+                    Err(e) => {
+                        info!("error: {:?}", e);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            error!("Engine run error: {:?}", e);
+        }
+    }
 
     // Keep the engine running for a while
     time::sleep(Duration::from_secs(30)).await;
