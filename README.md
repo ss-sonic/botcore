@@ -8,7 +8,7 @@ A flexible and efficient bot engine framework for building event-driven bots in 
 
 ## Overview
 
-`botcore` is a high-performance, type-safe framework for building event-driven bots in Rust. It provides a modular architecture that makes it easy to create, test, and maintain bot applications that can react to various events in real-time.
+`botcore` is a production-grade, asynchronous engine for building robust event-driven bots in Rust. It offers enterprise-level observability features, a flexible architecture, and type-safe APIs that enable developers to efficiently create, test, and deploy trading bots, arbitrage systems, and other event-reactive applications.
 
 ## Features
 
