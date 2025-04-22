@@ -259,7 +259,7 @@ async fn test_concurrent_processing() {
     }
 
     // Wait for all processing to complete
-    while let Some(_) = futures.next().await {}
+    while (futures.next().await).is_some() {}
 
     // Verify all trades were executed
     let trades = executed_trades.lock().await;
