@@ -7,6 +7,8 @@ mod metrics_impl {
         register_histogram_vec, register_int_counter_vec, register_int_gauge_vec, HistogramVec,
         IntCounterVec, IntGaugeVec,
     };
+    use prometheus_client::metrics::counter::Counter;
+    use std::sync::atomic::AtomicU64;
 
     /// Metrics collection and reporting for the bot engine.
     ///
@@ -163,6 +165,12 @@ mod metrics_impl {
         }
     }
 
+    impl Default for Metrics {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     /// The global metrics instance used throughout the crate.
     ///
     /// This instance provides access to all Prometheus metrics collectors:
@@ -188,8 +196,15 @@ mod metrics_stub {
     /// to facilitate testing without requiring a real metrics backend.
     pub struct Metrics;
 
+    impl Default for Metrics {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl Metrics {
         /// Creates a new mock metrics instance.
+        #[must_use]
         pub fn new() -> Self {
             Metrics
         }

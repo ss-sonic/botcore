@@ -136,7 +136,7 @@ fn bench_concurrent_processing(c: &mut Criterion) {
                     });
                 }
 
-                while let Some(_) = futures::StreamExt::next(&mut futures).await {}
+                while (futures::StreamExt::next(&mut futures).await).is_some() {}
 
                 assert_eq!(
                     executor

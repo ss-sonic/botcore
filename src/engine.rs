@@ -127,6 +127,7 @@ impl<E, A> Engine<E, A> {
     /// 
     /// Use [`Engine::with_event_channel_capacity`] and [`Engine::with_action_channel_capacity`]
     /// to customize these values.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             collectors: vec![],
@@ -145,6 +146,7 @@ impl<E, A> Engine<E, A> {
     /// # Arguments
     /// 
     /// * `capacity` - The maximum number of events that can be buffered
+    #[must_use]
     pub fn with_event_channel_capacity(mut self, capacity: usize) -> Self {
         self.event_channel_capacity = capacity;
         self
@@ -158,6 +160,7 @@ impl<E, A> Engine<E, A> {
     /// # Arguments
     /// 
     /// * `capacity` - The maximum number of actions that can be buffered
+    #[must_use]
     pub fn with_action_channel_capacity(mut self, capacity: usize) -> Self {
         self.action_channel_capacity = capacity;
         self
@@ -202,27 +205,14 @@ where
         self.executors.push(executor);
     }
 
-    /// Starts the engine and returns a set of tasks that can be awaited.
-    /// 
-    /// This method:
-    /// 1. Creates channels for events and actions
-    /// 2. Spawns tasks for each collector, strategy, and executor
-    /// 3. Returns a [`JoinSet`] containing all spawned tasks
-    /// 
-    /// The engine will continue running until one of:
-    /// - A collector's event stream ends
-    /// - A fatal error occurs
-    /// - The returned [`JoinSet`] is dropped
-    /// 
-    /// # Returns
-    /// 
-    /// A [`JoinSet`] containing all spawned tasks. The caller should await this
-    /// set to keep the engine running.
-    /// 
+    /// Runs the bot engine, starting all components and returning a `JoinSet` for task management.
+    ///
+    /// This function consumes the `Engine` instance.
+    ///
     /// # Errors
-    /// 
-    /// This method will return an error if any strategy fails to sync its initial
-    /// state.
+    ///
+    /// Returns an error if any strategy fails its initial `sync_state` call.
+    #[allow(clippy::too_many_lines)]
     pub async fn run(self) -> Result<JoinSet<()>> {
         let (event_sender, _): (Sender<E>, _) = broadcast::channel(self.event_channel_capacity);
         let (action_sender, _): (Sender<A>, _) = broadcast::channel(self.action_channel_capacity);
@@ -231,13 +221,13 @@ where
 
         // Spawn executors in separate threads.
         for (idx, executor) in self.executors.into_iter().enumerate() {
-            let mut receiver = action_sender.subscribe();
-            let executor_label = format!("executor_{}", idx);
+            let mut action_receiver = action_sender.subscribe();
+            let executor_label = format!("executor_{idx}");
             
             set.spawn(async move {
                 info!("starting executor... ");
                 loop {
-                    match receiver.recv().await {
+                    match action_receiver.recv().await {
                         Ok(action) => {
                             let start = Instant::now();
                             if let Err(e) = executor.execute(action).await {
@@ -256,7 +246,7 @@ where
                         Err(e) => {
                             METRICS.record_error(&executor_label, "channel_error");
                             error!(
-                                error = %BotError::channel_error(format!("Failed to receive action: {}", e)),
+                                error = %BotError::channel_error(format!("Failed to receive action: {e}")),
                                 "channel error"
                             );
                         }
@@ -269,7 +259,7 @@ where
         for (idx, mut strategy) in self.strategies.into_iter().enumerate() {
             let mut event_receiver = event_sender.subscribe();
             let action_sender = action_sender.clone();
-            let strategy_label = format!("strategy_{}", idx);
+            let strategy_label = format!("strategy_{idx}");
             
             strategy.sync_state().await.map_err(|e| {
                 METRICS.record_error(&strategy_label, "sync_error");
@@ -291,19 +281,19 @@ where
                                 if let Err(e) = action_sender.send(action) {
                                     METRICS.record_error(&strategy_label, "channel_error");
                                     error!(
-                                        error = %BotError::channel_error(format!("Failed to send action: {}", e)),
+                                        error = %BotError::channel_error(format!("Failed to send action: {e}")),
                                         "channel error"
                                     );
                                 }
                             }
 
                             // Update queue size metrics
-                            METRICS.update_action_queue_size(&strategy_label, action_sender.len() as i64);
+                            METRICS.update_action_queue_size(&strategy_label, action_sender.len().try_into().unwrap_or(i64::MAX));
                         }
                         Err(e) => {
                             METRICS.record_error(&strategy_label, "channel_error");
                             error!(
-                                error = %BotError::channel_error(format!("Failed to receive event: {}", e)),
+                                error = %BotError::channel_error(format!("Failed to receive event: {e}")),
                                 "channel error"
                             );
                         }
@@ -315,7 +305,7 @@ where
         // Spawn collectors in separate threads.
         for (idx, collector) in self.collectors.into_iter().enumerate() {
             let event_sender = event_sender.clone();
-            let collector_label = format!("collector_{}", idx);
+            let collector_label = format!("collector_{idx}");
             
             set.spawn(async move {
                 info!("starting collector... ");
@@ -335,14 +325,14 @@ where
                     if let Err(e) = event_sender.send(event) {
                         METRICS.record_error(&collector_label, "channel_error");
                         error!(
-                            error = %BotError::channel_error(format!("Failed to send event: {}", e)),
+                            error = %BotError::channel_error(format!("Failed to send event: {e}")),
                             "channel error"
                         );
                     } else {
                         METRICS.inc_events_processed(&collector_label);
                         
                         // Update queue size metrics
-                        METRICS.update_event_queue_size(&collector_label, event_sender.len() as i64);
+                        METRICS.update_event_queue_size(&collector_label, event_sender.len().try_into().unwrap_or(i64::MAX));
                     }
                 }
             });
@@ -464,7 +454,7 @@ mod tests {
         let result = engine.run().await;
         assert!(result.is_err());
         if let Err(BotError::StrategyError { message, .. }) = result {
-            assert!(message.contains("Failed to sync strategy state"), "Unexpected error message: {}", message);
+            assert!(message.contains("Failed to sync strategy state"), "Unexpected error message: {message}");
         } else {
             panic!("Expected StrategyError");
         }
@@ -489,7 +479,7 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         
         // The executor should have logged errors but continued running
-        assert!(join_set.len() > 0);
+        assert!(!join_set.is_empty());
     }
 
     #[tokio::test]
@@ -520,7 +510,7 @@ mod tests {
         assert!(!actions.is_empty());
         
         // The engine should still be running
-        assert!(join_set.len() > 0);
+        assert!(!join_set.is_empty());
     }
 
     #[tokio::test]
@@ -576,6 +566,6 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         
         // The strategy should continue running but not produce any actions
-        assert!(join_set.len() > 0);
+        assert!(!join_set.is_empty());
     }
 }
