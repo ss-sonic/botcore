@@ -1,5 +1,5 @@
-use thiserror::Error;
 use anyhow;
+use thiserror::Error;
 
 /// Represents all possible errors that can occur in the bot engine.
 ///
@@ -188,13 +188,17 @@ mod tests {
     #[test]
     fn test_collector_error() {
         let error = BotError::collector_error("test error");
-        assert!(matches!(error, BotError::CollectorError { message, source } 
-            if message == "test error" && source.is_none()));
-        
+        assert!(
+            matches!(error, BotError::CollectorError { message, source } 
+            if message == "test error" && source.is_none())
+        );
+
         let source = TestError("source error".to_string());
         let error = BotError::collector_error_with_source("test error", source);
-        assert!(matches!(error, BotError::CollectorError { message, source: Some(_) } 
-            if message == "test error"));
+        assert!(
+            matches!(error, BotError::CollectorError { message, source: Some(_) }
+            if message == "test error")
+        );
     }
 
     #[test]
@@ -202,11 +206,13 @@ mod tests {
         let error = BotError::strategy_error("test error");
         assert!(matches!(error, BotError::StrategyError { message, source }
             if message == "test error" && source.is_none()));
-        
+
         let source = TestError("source error".to_string());
         let error = BotError::strategy_error_with_source("test error", source);
-        assert!(matches!(error, BotError::StrategyError { message, source: Some(_) }
-            if message == "test error"));
+        assert!(
+            matches!(error, BotError::StrategyError { message, source: Some(_) }
+            if message == "test error")
+        );
     }
 
     #[test]
@@ -214,11 +220,13 @@ mod tests {
         let error = BotError::executor_error("test error");
         assert!(matches!(error, BotError::ExecutorError { message, source }
             if message == "test error" && source.is_none()));
-        
+
         let source = TestError("source error".to_string());
         let error = BotError::executor_error_with_source("test error", source);
-        assert!(matches!(error, BotError::ExecutorError { message, source: Some(_) }
-            if message == "test error"));
+        assert!(
+            matches!(error, BotError::ExecutorError { message, source: Some(_) }
+            if message == "test error")
+        );
     }
 
     #[test]
@@ -226,11 +234,13 @@ mod tests {
         let error = BotError::channel_error("test error");
         assert!(matches!(error, BotError::ChannelError { message, source }
             if message == "test error" && source.is_none()));
-        
+
         let source = TestError("source error".to_string());
         let error = BotError::channel_error_with_source("test error", source);
-        assert!(matches!(error, BotError::ChannelError { message, source: Some(_) }
-            if message == "test error"));
+        assert!(
+            matches!(error, BotError::ChannelError { message, source: Some(_) }
+            if message == "test error")
+        );
     }
 
     #[test]
