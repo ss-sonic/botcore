@@ -1,43 +1,45 @@
-use tokio::sync::broadcast::{self, Sender};
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::broadcast::{self};
+use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
 use tracing::{error, info};
-use std::time::Instant;
 
 use crate::error::{BotError, Result};
-use crate::types::{Collector, Executor, Strategy};
 use crate::metrics::METRICS;
+use crate::types::{Collector, Executor, Strategy};
 
 /// The main orchestrator that manages the flow of events and actions through the system.
-/// 
+///
 /// The `Engine` is responsible for:
 /// - Managing the lifecycle of collectors, strategies, and executors
 /// - Coordinating the flow of events from collectors to strategies
 /// - Coordinating the flow of actions from strategies to executors
 /// - Handling errors and metrics collection
-/// 
+///
 /// # Type Parameters
-/// 
+///
 /// * `E` - The type of events that flow through the system
 /// * `A` - The type of actions that flow through the system
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust
 /// use botcore::{Engine, Result};
 /// use botcore::types::{Collector, CollectorStream, Strategy, Executor};
 /// use async_trait::async_trait;
 /// use tokio_stream;
 /// use tracing::{info, error};
-/// 
+///
 /// #[derive(Debug, Clone)]
 /// struct BlockEvent;
-/// 
+///
 /// #[derive(Debug, Clone)]
 /// struct TradeAction;
-/// 
+///
 /// struct BlockCollector;
-/// 
+///
 /// #[async_trait]
 /// impl Collector<BlockEvent> for BlockCollector {
 ///     async fn get_event_stream(&self) -> Result<CollectorStream<'_, BlockEvent>> {
@@ -46,9 +48,9 @@ use crate::metrics::METRICS;
 ///         Ok(Box::pin(tokio_stream::iter(events)))
 ///     }
 /// }
-/// 
+///
 /// struct TradingStrategy;
-/// 
+///
 /// #[async_trait]
 /// impl Strategy<BlockEvent, TradeAction> for TradingStrategy {
 ///     async fn sync_state(&mut self) -> Result<()> {
@@ -61,9 +63,9 @@ use crate::metrics::METRICS;
 ///         vec![]
 ///     }
 /// }
-/// 
+///
 /// struct TradeExecutor;
-/// 
+///
 /// #[async_trait]
 /// impl Executor<TradeAction> for TradeExecutor {
 ///     async fn execute(&self, _action: TradeAction) -> Result<()> {
@@ -71,7 +73,7 @@ use crate::metrics::METRICS;
 ///         Ok(())
 ///     }
 /// }
-/// 
+///
 /// async fn run_bot() -> Result<()> {
 ///     // Create a new engine with custom channel capacities
 ///     let mut engine = Engine::<BlockEvent, TradeAction>::new()
@@ -120,11 +122,11 @@ pub struct Engine<E, A> {
 
 impl<E, A> Engine<E, A> {
     /// Creates a new engine with default channel capacities.
-    /// 
+    ///
     /// The default capacities are:
     /// - Event channel: 512 events
     /// - Action channel: 512 actions
-    /// 
+    ///
     /// Use [`Engine::with_event_channel_capacity`] and [`Engine::with_action_channel_capacity`]
     /// to customize these values.
     #[must_use]
@@ -139,12 +141,12 @@ impl<E, A> Engine<E, A> {
     }
 
     /// Sets the capacity of the event channel.
-    /// 
+    ///
     /// The event channel is used to buffer events between collectors and
     /// strategies. If the channel becomes full, collectors will be backpressured.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `capacity` - The maximum number of events that can be buffered
     #[must_use]
     pub fn with_event_channel_capacity(mut self, capacity: usize) -> Self {
@@ -153,12 +155,12 @@ impl<E, A> Engine<E, A> {
     }
 
     /// Sets the capacity of the action channel.
-    /// 
+    ///
     /// The action channel is used to buffer actions between strategies and
     /// executors. If the channel becomes full, strategies will be backpressured.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `capacity` - The maximum number of actions that can be buffered
     #[must_use]
     pub fn with_action_channel_capacity(mut self, capacity: usize) -> Self {
@@ -179,27 +181,27 @@ where
     A: Send + Clone + 'static + std::fmt::Debug,
 {
     /// Adds a collector to the engine.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `collector` - The collector to add
     pub fn add_collector(&mut self, collector: Box<dyn Collector<E>>) {
         self.collectors.push(collector);
     }
 
     /// Adds a strategy to the engine.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `strategy` - The strategy to add
     pub fn add_strategy(&mut self, strategy: Box<dyn Strategy<E, A>>) {
         self.strategies.push(strategy);
     }
 
     /// Adds an executor to the engine.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `executor` - The executor to add
     pub fn add_executor(&mut self, executor: Box<dyn Executor<A>>) {
         self.executors.push(executor);
@@ -214,127 +216,149 @@ where
     /// Returns an error if any strategy fails its initial `sync_state` call.
     #[allow(clippy::too_many_lines)]
     pub async fn run(self) -> Result<JoinSet<()>> {
-        let (event_sender, _): (Sender<E>, _) = broadcast::channel(self.event_channel_capacity);
-        let (action_sender, _): (Sender<A>, _) = broadcast::channel(self.action_channel_capacity);
+        let (event_sender, _) = broadcast::channel(self.event_channel_capacity);
+        let (action_sender, _) = broadcast::channel(self.action_channel_capacity);
 
         let mut set = JoinSet::new();
 
-        // Spawn executors in separate threads.
+        // ─── Executors ───────────────────────────────────────────────────────────────
         for (idx, executor) in self.executors.into_iter().enumerate() {
-            let mut action_receiver = action_sender.subscribe();
-            let executor_label = format!("executor_{idx}");
-            
-            set.spawn(async move {
-                info!("starting executor... ");
-                loop {
-                    match action_receiver.recv().await {
-                        Ok(action) => {
-                            let start = Instant::now();
-                            if let Err(e) = executor.execute(action).await {
-                                METRICS.record_error(&executor_label, "execution_error");
-                                error!(
-                                    error = %BotError::executor_error_with_source("Failed to execute action", e),
-                                    "executor error"
-                                );
-                            } else {
-                                let duration = start.elapsed().as_secs_f64();
+            let mut action_rx = action_sender.subscribe();
+            let executor = Arc::new(executor);
+            let label = format!("executor_{idx}");
 
-                                METRICS.record_action_execution(&executor_label, duration);
-                                METRICS.inc_actions_executed(&executor_label);
+            set.spawn({
+                let exec = executor.clone();
+                let label = label.clone();
+                async move {
+                    info!(%label, "starting executor...");
+                    while let Ok(action) = action_rx.recv().await {
+                        let exec = exec.clone();
+                        let label = label.clone();
+
+                        tokio::spawn(async move {
+                            let start = Instant::now();
+                            match exec.execute(action).await {
+                                Ok(()) => {
+                                    let dur = start.elapsed().as_secs_f64();
+                                    METRICS.record_action_execution(&label, dur);
+                                    METRICS.inc_actions_executed(&label);
+                                }
+                                Err(e) => {
+                                    METRICS.record_error(&label, "execution_error");
+                                    error!(
+                                        error = %BotError::executor_error_with_source("Failed to execute action", e),
+                                        %label,
+                                        "executor error"
+                                    );
+                                }
                             }
-                        }
-                        Err(e) => {
-                            METRICS.record_error(&executor_label, "channel_error");
-                            error!(
-                                error = %BotError::channel_error(format!("Failed to receive action: {e}")),
-                                "channel error"
-                            );
-                        }
+                        });
                     }
+                    info!(%label, "action channel closed, executor shutting down");
                 }
             });
         }
 
-        // Spawn strategies in separate threads.
-        for (idx, mut strategy) in self.strategies.into_iter().enumerate() {
-            let mut event_receiver = event_sender.subscribe();
-            let action_sender = action_sender.clone();
-            let strategy_label = format!("strategy_{idx}");
-            
-            strategy.sync_state().await.map_err(|e| {
-                METRICS.record_error(&strategy_label, "sync_error");
-                BotError::strategy_error_with_source("Failed to sync strategy state", e)
-            })?;
+        // ─── Strategies ───────────────────────────────────────────────────────────────
+        for (idx, strategy) in self.strategies.into_iter().enumerate() {
+            let strategy = Arc::new(Mutex::new(strategy));
+            let mut event_rx = event_sender.subscribe();
+            let action_tx = action_sender.clone();
+            let label = format!("strategy_{idx}");
 
-            set.spawn(async move {
-                info!("starting strategy... ");
-                loop {
-                    match event_receiver.recv().await {
-                        Ok(event) => {
+            // One-time sync_state under lock
+            {
+                let mut guard = strategy.lock().await;
+                guard.sync_state().await.map_err(|e| {
+                    METRICS.record_error(&label, "sync_error");
+                    BotError::strategy_error_with_source("Failed to sync strategy state", e)
+                })?;
+            }
+
+            set.spawn({
+                let strategy = strategy.clone();
+                let label = label.clone();
+                let action_tx = action_tx.clone();
+                async move {
+                    info!(%label, "starting strategy...");
+                    while let Ok(event) = event_rx.recv().await {
+                        let strategy = strategy.clone();
+                        let action_tx = action_tx.clone();
+                        let label = label.clone();
+
+                        tokio::spawn(async move {
                             let start = Instant::now();
-                            let actions = strategy.process_event(event).await;
-                            let duration = start.elapsed().as_secs_f64();
-                            
-                            METRICS.record_event_processing(&strategy_label, duration);
+
+                            // Guard all state access
+                            let actions = {
+                                let mut guard = strategy.lock().await;
+                                guard.process_event(event).await
+                            };
+
+                            let dur = start.elapsed().as_secs_f64();
+                            METRICS.record_event_processing(&label, dur);
 
                             for action in actions {
-                                if let Err(e) = action_sender.send(action) {
-                                    METRICS.record_error(&strategy_label, "channel_error");
+                                if let Err(e) = action_tx.send(action) {
+                                    METRICS.record_error(&label, "channel_error");
                                     error!(
                                         error = %BotError::channel_error(format!("Failed to send action: {e}")),
-                                        "channel error"
+                                        %label,
+                                        "strategy channel error"
                                     );
                                 }
                             }
 
-                            // Update queue size metrics
-                            METRICS.update_action_queue_size(&strategy_label, action_sender.len().try_into().unwrap_or(i64::MAX));
-                        }
-                        Err(e) => {
-                            METRICS.record_error(&strategy_label, "channel_error");
-                            error!(
-                                error = %BotError::channel_error(format!("Failed to receive event: {e}")),
-                                "channel error"
+                            METRICS.update_action_queue_size(
+                                &label,
+                                action_tx.len().try_into().unwrap_or(i64::MAX),
                             );
-                        }
+                        });
                     }
+                    info!(%label, "event channel closed, strategy shutting down");
                 }
             });
         }
 
-        // Spawn collectors in separate threads.
+        // ─── Collectors ──────────────────────────────────────────────────────────────
         for (idx, collector) in self.collectors.into_iter().enumerate() {
             let event_sender = event_sender.clone();
-            let collector_label = format!("collector_{idx}");
-            
+            let label = format!("collector_{idx}");
+
             set.spawn(async move {
-                info!("starting collector... ");
-                let mut event_stream = match collector.get_event_stream().await {
-                    Ok(stream) => stream,
+                info!(%label, "starting collector...");
+                let mut stream = match collector.get_event_stream().await {
+                    Ok(s) => s,
                     Err(e) => {
-                        METRICS.record_error(&collector_label, "stream_error");
+                        METRICS.record_error(&label, "stream_error");
                         error!(
                             error = %BotError::collector_error_with_source("Failed to get event stream", e),
+                            %label,
                             "collector error"
                         );
                         return;
                     }
                 };
 
-                while let Some(event) = event_stream.next().await {
+                while let Some(event) = stream.next().await {
                     if let Err(e) = event_sender.send(event) {
-                        METRICS.record_error(&collector_label, "channel_error");
+                        METRICS.record_error(&label, "channel_error");
                         error!(
                             error = %BotError::channel_error(format!("Failed to send event: {e}")),
-                            "channel error"
+                            %label,
+                            "collector channel error"
                         );
                     } else {
-                        METRICS.inc_events_processed(&collector_label);
-                        
-                        // Update queue size metrics
-                        METRICS.update_event_queue_size(&collector_label, event_sender.len().try_into().unwrap_or(i64::MAX));
+                        METRICS.inc_events_processed(&label);
+                        METRICS.update_event_queue_size(
+                            &label,
+                            event_sender.len().try_into().unwrap_or(i64::MAX),
+                        );
                     }
                 }
+
+                info!(%label, "event stream ended, collector shutting down");
             });
         }
 
@@ -354,7 +378,7 @@ mod tests {
     struct TestEvent(u64);
 
     #[allow(dead_code)]
-    #[derive(Debug, Clone)]    
+    #[derive(Debug, Clone)]
 
     struct TestAction(String);
 
@@ -433,7 +457,7 @@ mod tests {
         }));
 
         let join_set = engine.run().await.unwrap();
-        
+
         // The collector task should exit with an error
         assert_eq!(join_set.len(), 3); // All tasks should be spawned
     }
@@ -454,7 +478,10 @@ mod tests {
         let result = engine.run().await;
         assert!(result.is_err());
         if let Err(BotError::StrategyError { message, .. }) = result {
-            assert!(message.contains("Failed to sync strategy state"), "Unexpected error message: {message}");
+            assert!(
+                message.contains("Failed to sync strategy state"),
+                "Unexpected error message: {message}"
+            );
         } else {
             panic!("Expected StrategyError");
         }
@@ -474,10 +501,10 @@ mod tests {
         }));
 
         let join_set = engine.run().await.unwrap();
-        
+
         // Let the engine run for a bit to process events
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
+
         // The executor should have logged errors but continued running
         assert!(!join_set.is_empty());
     }
@@ -501,14 +528,14 @@ mod tests {
         }));
 
         let join_set = engine.run().await.unwrap();
-        
+
         // Let the engine run for a bit
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
+
         // Verify that some actions were processed despite the small channel capacity
         let actions = executed_actions.lock().await;
         assert!(!actions.is_empty());
-        
+
         // The engine should still be running
         assert!(!join_set.is_empty());
     }
@@ -523,7 +550,7 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_components() {
         let mut engine = Engine::<TestEvent, TestAction>::new();
-        
+
         // Add multiple collectors, strategies, and executors
         for _ in 0..3 {
             engine.add_collector(Box::new(MockCollector { should_fail: false }));
@@ -538,10 +565,10 @@ mod tests {
         }
 
         let join_set = engine.run().await.unwrap();
-        
+
         // Let the engine run for a bit
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
+
         // Verify that all components are running
         assert_eq!(join_set.len(), 9); // 3 collectors + 3 strategies + 3 executors
     }
@@ -561,10 +588,10 @@ mod tests {
         }));
 
         let join_set = engine.run().await.unwrap();
-        
+
         // Let the engine run for a bit
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
+
         // The strategy should continue running but not produce any actions
         assert!(!join_set.is_empty());
     }
