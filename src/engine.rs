@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::broadcast::{self, Sender};
+use tokio::sync::broadcast::{self};
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
